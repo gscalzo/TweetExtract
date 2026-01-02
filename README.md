@@ -5,7 +5,7 @@ Simple CLI to fetch your Twitter/X bookmarks with `@steipete/bird`, run a lightw
 ## Setup
 
 ```bash
-pnpm install
+make install
 ```
 
 Create a `.env` file with your DeepSeek key:
@@ -18,13 +18,13 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 ## Usage
 
 ```bash
-make bookmarks ARGS="--count 50 --duration 14d --out my-bookmarks"
+./run.sh bookmarks --count 50 --duration 14d --out my-bookmarks
 ```
 
-Or use the default target (same as `make run`):
+Or use the CLI directly (equivalent):
 
 ```bash
-make ARGS="bookmarks --count 50 --duration 14d --out my-bookmarks"
+pnpm dev -- bookmarks --count 50 --duration 14d --out my-bookmarks
 ```
 
 The report is saved under `reports/<name>/index.html`.
@@ -55,13 +55,13 @@ If you don’t see your terminal app, use the “+” button to add it from `/Ap
 By default, the tool tries to read cookies from Safari. You can override:
 
 ```bash
-make bookmarks ARGS="--cookie-source chrome"
+./run.sh bookmarks --cookie-source chrome
 ```
 
 Or pass cookies manually:
 
 ```bash
-make bookmarks ARGS="--auth-token <value> --ct0 <value>"
+./run.sh bookmarks --auth-token <value> --ct0 <value>
 ```
 
 ## Notes
