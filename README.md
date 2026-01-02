@@ -27,7 +27,7 @@ Or use the CLI directly (equivalent):
 pnpm dev -- bookmarks --count 50 --duration 14d --format markdown --out my-bookmarks
 ```
 
-The report is saved under `reports/<name>/report.md` with any downloaded images under `reports/<name>/media/`.
+The report is saved under `reports/<name>/report.md` with per-bookmark files under `reports/<name>/bookmarks/`.
 
 ## Privacy & Security (macOS Full Disk Access)
 
@@ -70,4 +70,4 @@ Or pass cookies manually:
 - Increase `--count` if you need older bookmarks when using a long duration.
 - Set `DEEPSEEK_API_KEY` in `.env` to enable summaries; use `--no-llm` to skip.
 - `--format` accepts `markdown` (default) or `html`.
-- Markdown reports include any images that can be discovered from tweet pages or direct image links.
+- Markdown reports include any image URLs discovered from tweet pages or direct links (no downloads).

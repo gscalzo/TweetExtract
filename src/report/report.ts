@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { escapeHtml, formatMultiline, truncate } from "../utils/text.js";
@@ -82,8 +81,10 @@ function normalizeFormat(input?: string): ReportFormat {
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-const MEDIA_URL_REGEX =
-  /https:\/\/pbs\.twimg\.com\/media\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]+)?(?:\?[^\s"'<>]*)?/g;
+const MEDIA_URL_PATTERN =
+  /https:\/\/pbs\.twimg\.com\/media\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]+)?(?:\?[^\s"'<>]*)?/;
+const MEDIA_URL_REGEX = new RegExp(MEDIA_URL_PATTERN.source, "g");
+const IMAGE_EXTENSION_REGEX = /\.(png|jpe?g|gif|webp|avif)(?:\?|$)/i;
 
 async function buildMarkdownReport(
   payload: ReportPayload,
@@ -99,27 +100,37 @@ async function buildMarkdownReport(
   }
   lines.push("");
 
-  const mediaDir = join(options.reportDir, "media");
-  await mkdir(mediaDir, { recursive: true });
-  const downloaded = new Map<string, string>();
+  const itemsDir = join(options.reportDir, "bookmarks");
+  await mkdir(itemsDir, { recursive: true });
+  lines.push("## Bookmarks");
+  lines.push("");
 
   for (const item of payload.items) {
-    const images = await collectImagesForItem(item, {
-      mediaDir,
-      downloaded,
+    const images = await collectImageUrls(item, {
       cookieHeader: options.cookieHeader,
     });
-    lines.push(...buildMarkdownItem(item, images));
-    lines.push("");
+    const itemFilename = `${item.id}.md`;
+    const itemMarkdown = buildMarkdownItem(item, images, {
+      backLink: "../report.md",
+    });
+    await writeFile(join(itemsDir, itemFilename), itemMarkdown);
+
+    const headline = item.summary ? item.summary : truncate(item.text, 120);
+    const createdAt = item.createdAt ? ` · ${item.createdAt}` : "";
+    lines.push(`- [@${item.authorUsername} — ${headline}](bookmarks/${itemFilename})${createdAt}`);
   }
 
   return lines.join("\n").trimEnd() + "\n";
 }
 
-function buildMarkdownItem(item: ReportItem, images: string[]): string[] {
+function buildMarkdownItem(item: ReportItem, images: string[], options: { backLink?: string }): string {
   const lines: string[] = [];
   const headline = item.summary ? item.summary : truncate(item.text, 120);
-  lines.push(`## @${item.authorUsername} — ${headline}`);
+  lines.push(`# @${item.authorUsername} — ${headline}`);
+  if (options.backLink) {
+    lines.push("");
+    lines.push(`[Back to report](${options.backLink})`);
+  }
   lines.push("");
   lines.push(`- URL: ${item.url}`);
   lines.push(`- Author: ${item.authorName} (@${item.authorUsername})`);
@@ -132,27 +143,27 @@ function buildMarkdownItem(item: ReportItem, images: string[]): string[] {
   lines.push("");
 
   if (item.summary) {
-    lines.push("### Summary");
+    lines.push("## Summary");
     lines.push(item.summary);
     lines.push("");
   }
 
   if (images.length > 0) {
-    lines.push("### Images");
-    images.forEach((image, index) => {
-      lines.push(`![image-${index + 1}](${image})`);
+    lines.push("## Images");
+    images.forEach((image) => {
+      lines.push(`- ${image}`);
     });
     lines.push("");
   }
 
-  lines.push("### Thread");
+  lines.push("## Thread");
   for (const tweet of item.thread) {
     const createdAt = tweet.createdAt ? ` · ${tweet.createdAt}` : "";
     lines.push(`- **@${tweet.authorUsername}**${createdAt}`);
     lines.push(`  ${indentMultiline(tweet.text)}`);
   }
 
-  return lines;
+  return lines.join("\n").trimEnd() + "\n";
 }
 
 function indentMultiline(text: string): string {
@@ -167,19 +178,17 @@ function extractUrls(text: string): string[] {
   return matches.map((url) => url.replace(/[),.;!?]+$/g, ""));
 }
 
-async function collectImagesForItem(
+async function collectImageUrls(
   item: ReportItem,
-  options: {
-    mediaDir: string;
-    downloaded: Map<string, string>;
-    cookieHeader?: string;
-  },
+  options: { cookieHeader?: string },
 ): Promise<string[]> {
   const urls = new Set<string>();
 
   for (const tweet of item.thread) {
     for (const url of extractUrls(tweet.text)) {
-      urls.add(url);
+      if (isLikelyImageUrl(url)) {
+        urls.add(url);
+      }
     }
   }
 
@@ -191,15 +200,7 @@ async function collectImagesForItem(
     mediaUrls.forEach((url) => urls.add(url));
   }
 
-  const images: string[] = [];
-  for (const url of urls) {
-    const imagePath = await downloadImage(url, options.mediaDir, options.downloaded);
-    if (imagePath) {
-      images.push(imagePath);
-    }
-  }
-
-  return images;
+  return Array.from(urls);
 }
 
 async function extractMediaUrlsFromTweetPage(tweetId: string, cookieHeader?: string): Promise<string[]> {
@@ -221,58 +222,8 @@ async function extractMediaUrlsFromTweetPage(tweetId: string, cookieHeader?: str
   }
 }
 
-async function downloadImage(url: string, mediaDir: string, downloaded: Map<string, string>): Promise<string | null> {
-  const cached = downloaded.get(url);
-  if (cached) {
-    return cached;
-  }
-
-  try {
-    const response = await fetch(url, { headers: { "user-agent": DEFAULT_USER_AGENT } });
-    if (!response.ok) {
-      return null;
-    }
-    const contentType = response.headers.get("content-type");
-    if (!contentType?.toLowerCase().startsWith("image/")) {
-      return null;
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const extension = extensionFromContentType(contentType) ?? extensionFromUrl(url) ?? "img";
-    const hash = createHash("sha256").update(url).digest("hex").slice(0, 12);
-    const filename = `image-${hash}.${extension}`;
-    await writeFile(join(mediaDir, filename), buffer);
-    const relPath = `media/${filename}`;
-    downloaded.set(url, relPath);
-    return relPath;
-  } catch {
-    return null;
-  }
-}
-
-function extensionFromContentType(contentType: string | null): string | null {
-  if (!contentType) {
-    return null;
-  }
-  const type = contentType.split(";")[0]?.trim().toLowerCase();
-  switch (type) {
-    case "image/jpeg":
-      return "jpg";
-    case "image/png":
-      return "png";
-    case "image/gif":
-      return "gif";
-    case "image/webp":
-      return "webp";
-    case "image/avif":
-      return "avif";
-    default:
-      return null;
-  }
-}
-
-function extensionFromUrl(url: string): string | null {
-  const match = url.match(/\.([a-zA-Z0-9]{2,5})(?:\?|$)/);
-  return match ? match[1].toLowerCase() : null;
+function isLikelyImageUrl(url: string): boolean {
+  return MEDIA_URL_PATTERN.test(url) || IMAGE_EXTENSION_REGEX.test(url);
 }
 
 function buildIndexHtml(payload: ReportPayload): string {
