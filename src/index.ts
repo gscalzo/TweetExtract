@@ -16,6 +16,7 @@ program
   .option("--count <number>", "Number of bookmarks to fetch", "50")
   .option("--duration <duration>", "Only include tweets newer than duration (e.g. 7d, 24h, 2w)")
   .option("--out <name>", "Report folder name under ./reports")
+  .option("--format <format>", "Report format (markdown or html)", "markdown")
   .option("--no-llm", "Skip LLM analysis")
   .option("--cookie-source <sources>", "Cookie sources (comma-separated: safari,chrome,firefox)", "safari")
   .option("--auth-token <token>", "Auth token cookie value")
@@ -30,6 +31,7 @@ program
         count: Number(opts.count),
         duration: opts.duration,
         out: opts.out,
+        format: opts.format,
         llmEnabled: opts.llm !== false,
         cookieSource: opts.cookieSource,
         authToken: opts.authToken,

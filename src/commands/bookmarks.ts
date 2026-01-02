@@ -16,6 +16,7 @@ export interface BookmarksOptions {
   count: number;
   duration?: string;
   out?: string;
+  format?: string;
   llmEnabled: boolean;
   cookieSource: string;
   authToken?: string;
@@ -110,7 +111,13 @@ export async function runBookmarks(options: BookmarksOptions) {
     items,
   };
 
-  const { reportDir } = await writeReport(payload, { reportName, rootDir: reportsRoot });
+  const cookieHeader = cookies.cookieHeader || (cookies.authToken && cookies.ct0 ? `auth_token=${cookies.authToken}; ct0=${cookies.ct0}` : "");
+  const { reportDir } = await writeReport(payload, {
+    reportName,
+    rootDir: reportsRoot,
+    format: options.format,
+    cookieHeader,
+  });
   console.log(`Report saved to ${reportDir}`);
 }
 

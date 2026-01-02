@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { escapeHtml, formatMultiline, truncate } from "../utils/text.js";
@@ -36,21 +37,242 @@ export interface ReportPayload {
   items: ReportItem[];
 }
 
-export async function writeReport(payload: ReportPayload, options: { reportName: string; rootDir: string }) {
+export type ReportFormat = "markdown" | "html";
+
+export async function writeReport(
+  payload: ReportPayload,
+  options: { reportName: string; rootDir: string; format?: string; cookieHeader?: string },
+) {
   const safeName = sanitizeReportName(options.reportName);
   const reportDir = join(options.rootDir, safeName);
-  const tweetsDir = join(reportDir, "tweets");
+  const format = normalizeFormat(options.format);
 
-  await mkdir(tweetsDir, { recursive: true });
+  await mkdir(reportDir, { recursive: true });
 
   await writeFile(join(reportDir, "report.json"), JSON.stringify(payload, null, 2));
-  await writeFile(join(reportDir, "index.html"), buildIndexHtml(payload));
-
-  for (const item of payload.items) {
-    await writeFile(join(tweetsDir, `${item.id}.html`), buildTweetHtml(payload.meta, item));
+  if (format === "markdown") {
+    const markdown = await buildMarkdownReport(payload, {
+      reportDir,
+      cookieHeader: options.cookieHeader,
+    });
+    await writeFile(join(reportDir, "report.md"), markdown);
+  } else {
+    const tweetsDir = join(reportDir, "tweets");
+    await mkdir(tweetsDir, { recursive: true });
+    await writeFile(join(reportDir, "index.html"), buildIndexHtml(payload));
+    for (const item of payload.items) {
+      await writeFile(join(tweetsDir, `${item.id}.html`), buildTweetHtml(payload.meta, item));
+    }
   }
 
   return { reportDir };
+}
+
+function normalizeFormat(input?: string): ReportFormat {
+  const value = (input ?? "markdown").trim().toLowerCase();
+  if (value === "markdown" || value === "md") {
+    return "markdown";
+  }
+  if (value === "html") {
+    return "html";
+  }
+  throw new Error(`Invalid --format value: ${input}. Allowed: markdown, html.`);
+}
+
+const DEFAULT_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+const MEDIA_URL_REGEX =
+  /https:\/\/pbs\.twimg\.com\/media\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]+)?(?:\?[^\s"'<>]*)?/g;
+
+async function buildMarkdownReport(
+  payload: ReportPayload,
+  options: { reportDir: string; cookieHeader?: string },
+): Promise<string> {
+  const lines: string[] = [];
+  lines.push("# Bookmark Report");
+  lines.push("");
+  lines.push(`Generated: ${payload.meta.generatedAt}`);
+  lines.push(`Count: ${payload.meta.count}`);
+  if (payload.meta.duration) {
+    lines.push(`Duration: ${payload.meta.duration}`);
+  }
+  lines.push("");
+
+  const mediaDir = join(options.reportDir, "media");
+  await mkdir(mediaDir, { recursive: true });
+  const downloaded = new Map<string, string>();
+
+  for (const item of payload.items) {
+    const images = await collectImagesForItem(item, {
+      mediaDir,
+      downloaded,
+      cookieHeader: options.cookieHeader,
+    });
+    lines.push(...buildMarkdownItem(item, images));
+    lines.push("");
+  }
+
+  return lines.join("\n").trimEnd() + "\n";
+}
+
+function buildMarkdownItem(item: ReportItem, images: string[]): string[] {
+  const lines: string[] = [];
+  const headline = item.summary ? item.summary : truncate(item.text, 120);
+  lines.push(`## @${item.authorUsername} — ${headline}`);
+  lines.push("");
+  lines.push(`- URL: ${item.url}`);
+  lines.push(`- Author: ${item.authorName} (@${item.authorUsername})`);
+  if (item.createdAt) {
+    lines.push(`- Created: ${item.createdAt}`);
+  }
+  if (item.tags?.length) {
+    lines.push(`- Tags: ${item.tags.join(", ")}`);
+  }
+  lines.push("");
+
+  if (item.summary) {
+    lines.push("### Summary");
+    lines.push(item.summary);
+    lines.push("");
+  }
+
+  if (images.length > 0) {
+    lines.push("### Images");
+    images.forEach((image, index) => {
+      lines.push(`![image-${index + 1}](${image})`);
+    });
+    lines.push("");
+  }
+
+  lines.push("### Thread");
+  for (const tweet of item.thread) {
+    const createdAt = tweet.createdAt ? ` · ${tweet.createdAt}` : "";
+    lines.push(`- **@${tweet.authorUsername}**${createdAt}`);
+    lines.push(`  ${indentMultiline(tweet.text)}`);
+  }
+
+  return lines;
+}
+
+function indentMultiline(text: string): string {
+  return text.split("\n").map((line) => line.trimEnd()).join("\n  ");
+}
+
+function extractUrls(text: string): string[] {
+  const matches = text.match(/\bhttps?:\/\/[^\s<>()]+/gi);
+  if (!matches) {
+    return [];
+  }
+  return matches.map((url) => url.replace(/[),.;!?]+$/g, ""));
+}
+
+async function collectImagesForItem(
+  item: ReportItem,
+  options: {
+    mediaDir: string;
+    downloaded: Map<string, string>;
+    cookieHeader?: string;
+  },
+): Promise<string[]> {
+  const urls = new Set<string>();
+
+  for (const tweet of item.thread) {
+    for (const url of extractUrls(tweet.text)) {
+      urls.add(url);
+    }
+  }
+
+  const tweetIds = new Set(item.thread.map((tweet) => tweet.id));
+  tweetIds.add(item.id);
+
+  for (const tweetId of tweetIds) {
+    const mediaUrls = await extractMediaUrlsFromTweetPage(tweetId, options.cookieHeader);
+    mediaUrls.forEach((url) => urls.add(url));
+  }
+
+  const images: string[] = [];
+  for (const url of urls) {
+    const imagePath = await downloadImage(url, options.mediaDir, options.downloaded);
+    if (imagePath) {
+      images.push(imagePath);
+    }
+  }
+
+  return images;
+}
+
+async function extractMediaUrlsFromTweetPage(tweetId: string, cookieHeader?: string): Promise<string[]> {
+  try {
+    const response = await fetch(`https://x.com/i/status/${tweetId}`, {
+      headers: {
+        "user-agent": DEFAULT_USER_AGENT,
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const html = await response.text();
+    const matches = html.match(MEDIA_URL_REGEX) ?? [];
+    return Array.from(new Set(matches));
+  } catch {
+    return [];
+  }
+}
+
+async function downloadImage(url: string, mediaDir: string, downloaded: Map<string, string>): Promise<string | null> {
+  const cached = downloaded.get(url);
+  if (cached) {
+    return cached;
+  }
+
+  try {
+    const response = await fetch(url, { headers: { "user-agent": DEFAULT_USER_AGENT } });
+    if (!response.ok) {
+      return null;
+    }
+    const contentType = response.headers.get("content-type");
+    if (!contentType?.toLowerCase().startsWith("image/")) {
+      return null;
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const extension = extensionFromContentType(contentType) ?? extensionFromUrl(url) ?? "img";
+    const hash = createHash("sha256").update(url).digest("hex").slice(0, 12);
+    const filename = `image-${hash}.${extension}`;
+    await writeFile(join(mediaDir, filename), buffer);
+    const relPath = `media/${filename}`;
+    downloaded.set(url, relPath);
+    return relPath;
+  } catch {
+    return null;
+  }
+}
+
+function extensionFromContentType(contentType: string | null): string | null {
+  if (!contentType) {
+    return null;
+  }
+  const type = contentType.split(";")[0]?.trim().toLowerCase();
+  switch (type) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/avif":
+      return "avif";
+    default:
+      return null;
+  }
+}
+
+function extensionFromUrl(url: string): string | null {
+  const match = url.match(/\.([a-zA-Z0-9]{2,5})(?:\?|$)/);
+  return match ? match[1].toLowerCase() : null;
 }
 
 function buildIndexHtml(payload: ReportPayload): string {

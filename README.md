@@ -18,16 +18,16 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 ## Usage
 
 ```bash
-./run.sh bookmarks --count 50 --duration 14d --out my-bookmarks
+./run.sh bookmarks --count 50 --duration 14d --format markdown --out my-bookmarks
 ```
 
 Or use the CLI directly (equivalent):
 
 ```bash
-pnpm dev -- bookmarks --count 50 --duration 14d --out my-bookmarks
+pnpm dev -- bookmarks --count 50 --duration 14d --format markdown --out my-bookmarks
 ```
 
-The report is saved under `reports/<name>/index.html`.
+The report is saved under `reports/<name>/report.md` with any downloaded images under `reports/<name>/media/`.
 
 ## Privacy & Security (macOS Full Disk Access)
 
@@ -69,3 +69,5 @@ Or pass cookies manually:
 - `--duration` accepts `h`, `d`, `w`, `mo`, `y` (e.g. `24h`, `7d`, `2w`).
 - Increase `--count` if you need older bookmarks when using a long duration.
 - Set `DEEPSEEK_API_KEY` in `.env` to enable summaries; use `--no-llm` to skip.
+- `--format` accepts `markdown` (default) or `html`.
+- Markdown reports include any images that can be discovered from tweet pages or direct image links.

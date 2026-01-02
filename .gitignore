@@ -19,3 +19,4 @@ yarn-error.log*
 .pnpm-store
 
 .DS_Store
+reports
